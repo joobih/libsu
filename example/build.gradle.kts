@@ -3,9 +3,11 @@ plugins {
 }
 
 android {
+    namespace = "com.topjohnwu.libsuexample"
+
     defaultConfig {
+        minSdk = 21
         applicationId = "com.topjohnwu.libsuexample"
-        minSdkVersion(18)
         versionCode = 1
         versionName ="1.0"
     }
@@ -29,12 +31,16 @@ android {
             path = file("src/main/cpp/CMakeLists.txt")
         }
     }
+
+    lint {
+        abortOnError = false
+    }
 }
 
 dependencies {
     implementation(fileTree(mapOf("dir" to "libs", "include" to listOf("*.jar"))))
     implementation(project(":core"))
-    implementation(project(":io"))
-    implementation(project(":busybox"))
     implementation(project(":service"))
+    implementation(project(":io"))
+    implementation(project(":nio"))
 }

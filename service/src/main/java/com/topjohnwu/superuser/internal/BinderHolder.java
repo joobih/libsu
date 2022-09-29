@@ -1,5 +1,5 @@
 /*
- * Copyright 2021 John "topjohnwu" Wu
+ * Copyright 2022 John "topjohnwu" Wu
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -16,6 +16,23 @@
 
 package com.topjohnwu.superuser.internal;
 
-public class Container<T> {
-    public T obj;
+import android.os.IBinder;
+import android.os.RemoteException;
+
+abstract class BinderHolder implements IBinder.DeathRecipient {
+
+    private final IBinder binder;
+
+    BinderHolder(IBinder b) throws RemoteException {
+        binder = b;
+        binder.linkToDeath(this, 0);
+    }
+
+    @Override
+    public final void binderDied() {
+        binder.unlinkToDeath(this, 0);
+        UiThreadHandler.run(this::onBinderDied);
+    }
+
+    protected abstract void onBinderDied();
 }

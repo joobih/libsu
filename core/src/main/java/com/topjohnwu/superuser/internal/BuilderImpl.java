@@ -16,7 +16,11 @@
 
 package com.topjohnwu.superuser.internal;
 
+import static com.topjohnwu.superuser.Shell.FLAG_MOUNT_MASTER;
+import static com.topjohnwu.superuser.Shell.FLAG_NON_ROOT_SHELL;
+
 import android.content.Context;
+import android.text.TextUtils;
 
 import androidx.annotation.NonNull;
 import androidx.annotation.RestrictTo;
@@ -27,16 +31,65 @@ import com.topjohnwu.superuser.Shell;
 import java.io.IOException;
 import java.lang.reflect.Constructor;
 
-import static com.topjohnwu.superuser.Shell.FLAG_MOUNT_MASTER;
-import static com.topjohnwu.superuser.Shell.FLAG_NON_ROOT_SHELL;
-import static com.topjohnwu.superuser.Shell.FLAG_REDIRECT_STDERR;
-import static com.topjohnwu.superuser.Shell.ROOT_SHELL;
-
 @RestrictTo(RestrictTo.Scope.LIBRARY)
-public class BuilderImpl extends Shell.Builder {
+public final class BuilderImpl extends Shell.Builder {
+    private static final String TAG = "BUILDER";
 
-    boolean hasFlags(int flags) {
-        return (this.flags & flags) == flags;
+    long timeout = 20;
+    private int flags = 0;
+    private Shell.Initializer[] initializers;
+
+    boolean hasFlags(int mask) {
+        return (flags & mask) == mask;
+    }
+
+    @NonNull
+    @Override
+    public Shell.Builder setFlags(int f) {
+        flags = f;
+        return this;
+    }
+
+    @NonNull
+    @Override
+    public Shell.Builder setTimeout(long t) {
+        timeout = t;
+        return this;
+    }
+
+    @NonNull
+    @Override
+    public Shell.Builder setContext(@NonNull Context context) {
+        // This context instance does not need to be stored in the builder,
+        // as we will store the raw ContextImpl of the whole application
+        // into a global static field.
+        if (Utils.context == null) {
+            // Get the ContextImpl first so that getApplicationContext cannot be overridden
+            context = Utils.getContextImpl(context);
+            // Then get the application context, as the provided context could be from
+            // a provider, receiver, service, or activity.
+            Context app = context.getApplicationContext();
+            // getApplicationContext() could return null if the context is provided
+            // during the Application's attach.
+            if (app != null)
+                context = app;
+            // Finally, get the raw ContextImpl of the app.
+            Utils.context = Utils.getContextImpl(context);
+        }
+        return this;
+    }
+
+    public void createInitializers(@NonNull Class<? extends Shell.Initializer>[] clz) {
+        initializers = new Shell.Initializer[clz.length];
+        for (int i = 0; i < clz.length; ++i) {
+            try {
+                Constructor<? extends Shell.Initializer> c = clz[i].getDeclaredConstructor();
+                c.setAccessible(true);
+                initializers[i] = c.newInstance();
+            } catch (ReflectiveOperationException | ClassCastException e) {
+                Utils.err(e);
+            }
+        }
     }
 
     @NonNull
@@ -48,7 +101,7 @@ public class BuilderImpl extends Shell.Builder {
         if (!hasFlags(FLAG_NON_ROOT_SHELL) && hasFlags(FLAG_MOUNT_MASTER)) {
             try {
                 shell = build("vigo", "--mount-master");
-                if (shell.getStatus() != Shell.ROOT_MOUNT_MASTER)
+                if (!shell.isRoot())
                     shell = null;
             } catch (NoShellException ignore) {}
         }
@@ -57,14 +110,19 @@ public class BuilderImpl extends Shell.Builder {
         if (shell == null && !hasFlags(FLAG_NON_ROOT_SHELL)) {
             try {
                 shell = build("vigo");
-                if (shell.getStatus() != ROOT_SHELL)
+                if (!shell.isRoot()) {
                     shell = null;
+                }
             } catch (NoShellException ignore) {}
         }
 
         // Try normal non-root shell
-        if (shell == null)
+        if (shell == null) {
+            if (!hasFlags(FLAG_NON_ROOT_SHELL)) {
+                Utils.setConfirmedRootState(false);
+            }
             shell = build("sh");
+        }
 
         return shell;
     }
@@ -72,28 +130,32 @@ public class BuilderImpl extends Shell.Builder {
     @NonNull
     @Override
     public ShellImpl build(String... commands) {
-        ShellImpl shell;
         try {
-            shell = new ShellImpl(timeout, hasFlags(FLAG_REDIRECT_STDERR), commands);
+            Utils.log(TAG, "exec " + TextUtils.join(" ", commands));
+            Process process = Runtime.getRuntime().exec(commands);
+            return build(process);
         } catch (IOException e) {
             Utils.ex(e);
             throw new NoShellException("Unable to create a shell!", e);
         }
-        MainShell.set(shell);
-        if (initClasses != null) {
+    }
+
+    @NonNull
+    @Override
+    public ShellImpl build(Process process) {
+        ShellImpl shell;
+        try {
+            shell = new ShellImpl(this, process);
+        } catch (IOException e) {
+            Utils.ex(e);
+            throw new NoShellException("Unable to create a shell!", e);
+        }
+        MainShell.setCached(shell);
+        if (initializers != null) {
             Context ctx = Utils.getContext();
-            for (Class<? extends Shell.Initializer> cls : initClasses) {
-                Shell.Initializer init;
-                try {
-                    Constructor<? extends Shell.Initializer> ic = cls.getDeclaredConstructor();
-                    ic.setAccessible(true);
-                    init = ic.newInstance();
-                } catch (Exception e) {
-                    Utils.err(e);
-                    continue;
-                }
-                if (!init.onInit(ctx, shell)) {
-                    MainShell.set(null);
+            for (Shell.Initializer init : initializers) {
+                if (init != null && !init.onInit(ctx, shell)) {
+                    MainShell.setCached(null);
                     throw new NoShellException("Unable to init shell");
                 }
             }
